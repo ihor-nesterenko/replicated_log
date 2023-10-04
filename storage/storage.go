@@ -1,14 +1,19 @@
-package main
+package storage
 
 import "sync"
 
-var inMemoryList list
+// FIXME: singletone is bad. I'll will refactor it to something normal in the future, I promise
+var inMemoryList *list
 
-func initList() {
-	inMemoryList = list{
+func InitList() {
+	inMemoryList = &list{
 		list:    []string{},
 		RWMutex: sync.RWMutex{},
 	}
+}
+
+func GetList() *list {
+	return inMemoryList
 }
 
 // list is concurrent safe list

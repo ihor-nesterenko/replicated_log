@@ -2,7 +2,7 @@ package main
 
 const (
 	local = "local"
-	cloud = "server"
+	cloud = "grpc_server"
 )
 
 var envMap = map[string]struct{}{}
