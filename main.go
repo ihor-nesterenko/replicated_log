@@ -3,18 +3,18 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"github.com/kelseyhightower/envconfig"
-	"github.com/replicated_log/api"
 	"github.com/replicated_log/grpc_server"
+	"github.com/replicated_log/http_server"
+	"github.com/replicated_log/lifecycle"
 	"github.com/replicated_log/storage"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	"google.golang.org/grpc"
 	"io"
-	"net"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 )
 
 const (
@@ -24,10 +24,6 @@ const (
 type resp struct {
 	Data []string `json:"data"`
 	Err  error    `json:"err"`
-}
-
-var methods = map[string]func(w http.ResponseWriter, r *http.Request){
-	http.MethodGet: listMsgs,
 }
 
 //go:generate protoc --go_out=./api --go_opt=paths=source_relative --go-grpc_out=./api --go-grpc_opt=paths=source_relative api.proto
@@ -46,41 +42,48 @@ func main() {
 	log.Info().Msg("Initializing in memory storage")
 	storage.InitList()
 
-	//FIXME: add proper lifecycle for concurrent processes here
-	//if main node -> add POST handler
+	var methods = map[string]func(w http.ResponseWriter, r *http.Request){
+		http.MethodGet: listMsgs,
+	}
+	var apis []lifecycle.Lifecycle
+
+	//Init http server
 	if cfg.IsMainNode {
 		log.Info().Msg("Service configured as main node")
 		methods[http.MethodPost] = appendMsgs
-	} else { //start grpc server to enable replication
+	} else {
+		log.Info().Msg("Service configured as child node")
+		apis = append(apis, &grpc_server.Server{})
+	}
+
+	httpServer := http_server.NewServer(methods)
+	apis = append(apis, httpServer)
+
+	//listen for syscalls to gracefully shutdown all goroutines
+	done := make(chan os.Signal, 1)
+	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
+
+	for _, api := range apis {
+		api := api
 		go func() {
-			//FIXME: move this to init function
-			log.Info().Msg("Service started as child node; starting replication gRPC server")
-			lis, err := net.Listen("tcp", fmt.Sprintf(":%d", 50051))
-			if err != nil {
-				log.Error().Err(err).Msg("failed to listen")
-				return
-			}
-			s := grpc.NewServer()
-			defer s.Stop()
-			api.RegisterReplicatorServer(s, &grpc_server.Server{})
-			if err := s.Serve(lis); err != nil {
-				log.Error().Err(err).Msg("failed to listen")
-				return
+			if err := api.Start(); err != nil {
+				log.Warn().Err(err).Msg("Error on Start")
 			}
 		}()
 	}
 
-	//FIXME: replace DefaultServeMux with custom one
-	http.HandleFunc("/messages", func(w http.ResponseWriter, r *http.Request) {
-		handler, ok := methods[r.Method]
-		if !ok {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		handler(w, r)
-	})
+	log.Info().Msg("Replicator Started")
+	//wait for os signal
+	<-done
 
-	http.ListenAndServe(":8080", nil)
+	//gracefully stop all child processes
+	for _, api := range apis {
+		if err := api.Stop(); err != nil {
+			log.Warn().Err(err).Msg("Error on Stop")
+		}
+	}
+
+	log.Info().Msg("Replicator gracefully stopped")
 }
 
 func listMsgs(w http.ResponseWriter, _ *http.Request) {

@@ -2,36 +2,42 @@ package storage
 
 import "sync"
 
-// FIXME: singletone is bad. I'll will refactor it to something normal in the future, I promise
-var inMemoryList *list
+var inMemoryList *List
 
 func InitList() {
-	inMemoryList = &list{
+	inMemoryList = &List{
 		list:    []string{},
 		RWMutex: sync.RWMutex{},
 	}
 }
 
-func GetList() *list {
+func GetList() *List {
 	return inMemoryList
 }
 
-// list is concurrent safe list
-type list struct {
+// List is concurrent safe List
+type List struct {
 	list []string
 	sync.RWMutex
 }
 
-// Get gets stored list
-func (l *list) Get() []string {
+func NewList() List {
+	return List{
+		list:    []string{},
+		RWMutex: sync.RWMutex{},
+	}
+}
+
+// Get gets stored List
+func (l *List) Get() []string {
 	l.RLock()
 	defer l.RUnlock()
 
 	return l.list
 }
 
-// Add adds new element to the list
-func (l *list) Add(elem string) {
+// Add adds new element to the List
+func (l *List) Add(elem string) {
 	l.Lock()
 	defer l.Unlock()
 
