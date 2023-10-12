@@ -3,16 +3,14 @@ services:
     build: .
     environment:
       - MAIN_NODE=true
-      - REPLICAS="replica_1:50051, replica_2:50051"
+      - REPLICAS=replica_1:50051,replica_2:50051
     ports:
       - "8080:8080"
   replica_1:
     build: .
     ports:
-      - "8080:8080"
-      - "50051:50051"
+      - "8081:8080"
   replica_2:
     build: .
     ports:
-      - "8080:8080"
-      - "50051:50051"
+      - "8082:8080"

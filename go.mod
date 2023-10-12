@@ -1,6 +1,6 @@
 module github.com/replicated_log
 
-go 1.20
+go 1.21
 
 require (
 	github.com/kelseyhightower/envconfig v1.4.0

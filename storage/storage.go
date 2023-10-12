@@ -21,13 +21,6 @@ type List struct {
 	sync.RWMutex
 }
 
-func NewList() List {
-	return List{
-		list:    []string{},
-		RWMutex: sync.RWMutex{},
-	}
-}
-
 // Get gets stored List
 func (l *List) Get() []string {
 	l.RLock()
