@@ -1,0 +1,14 @@
+syntax = "proto3";
+package api;
+option go_package = "github.com/replicated_log/api";
+service Replicator {
+  rpc Replicate (ReplicateRequest) returns (ReplicateResponse);
+}
+
+message ReplicateRequest {
+  string msg = 1;
+}
+
+message ReplicateResponse {
+  repeated string msg = 1;
+}
