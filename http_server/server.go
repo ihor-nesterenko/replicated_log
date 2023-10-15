@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -23,7 +24,7 @@ const (
 
 type resp struct {
 	Data []string `json:"data"`
-	Err  string   `json:"err"`
+	Errs []string `json:"err"`
 }
 
 type Server struct {
@@ -94,7 +95,7 @@ func (s *Server) appendMsgs(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		resp := resp{
-			Err: errors.New("failed to read request body").Error(),
+			Errs: []string{errors.New("failed to read request body").Error()},
 		}
 		if err = json.NewEncoder(w).Encode(&resp); err != nil {
 			log.Error().Err(err).Msg("failed to write http response body")
@@ -105,42 +106,88 @@ func (s *Server) appendMsgs(w http.ResponseWriter, r *http.Request) {
 
 	storage.GetList().Add(msg)
 
+	replicasChs := make([]<-chan error, 0, len(s.replicas))
 	for _, replica := range s.replicas {
-		if err = s.replicate(replica, msg); err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			resp := resp{
-				Err: fmt.Errorf("failed to replicate log: %w", err).Error(),
-			}
-			if err = json.NewEncoder(w).Encode(&resp); err != nil {
-				log.Error().Err(err).Msg("failed to write http response body")
-			}
-			return
+		replicasChs = append(replicasChs, s.replicate(replica, msg))
+
+	}
+
+	res := merge(replicasChs...)
+	var errorsFromReplicas []string
+	for err := range res {
+		if err != nil {
+			errorsFromReplicas = append(errorsFromReplicas, fmt.Errorf("failed to replicate log: %w", err).Error())
 		}
+	}
+
+	if len(errorsFromReplicas) != 0 {
+		w.WriteHeader(http.StatusInternalServerError)
+		resp := resp{
+			Errs: errorsFromReplicas,
+		}
+		if err = json.NewEncoder(w).Encode(&resp); err != nil {
+			log.Error().Err(err).Msg("failed to write http response body")
+		}
+		return
 	}
 
 	s.listMsgs(w, r)
 }
 
-func (s *Server) replicate(replica, msg string) error {
-	conn, err := grpc.Dial(replica, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return fmt.Errorf("failed to dial to replica node: %w", err)
-	}
-	defer func() {
-		if err := conn.Close(); err != nil {
-			log.Error().Err(err).Msg("failed to close replica connection")
+func (s *Server) replicate(replica, msg string) <-chan error {
+	resCh := make(chan error)
+	go func() {
+		defer close(resCh)
+
+		conn, err := grpc.Dial(replica, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			resCh <- fmt.Errorf("failed to dial to replica node: %w", err)
+			return
 		}
+		defer func() {
+			if err := conn.Close(); err != nil {
+				log.Error().Err(err).Msg("failed to close replica connection")
+			}
+		}()
+
+		client := api.NewReplicatorClient(conn)
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		_, err = client.Replicate(ctx, &api.ReplicateRequest{Msg: msg})
+		if err != nil {
+			resCh <- fmt.Errorf("failed to replicate message: %w", err)
+			return
+		}
+
+		return
 	}()
+	return resCh
+}
 
-	client := api.NewReplicatorClient(conn)
+func merge[T any](chs ...<-chan T) <-chan T {
+	var wg sync.WaitGroup
+	out := make(chan T)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	_, err = client.Replicate(ctx, &api.ReplicateRequest{Msg: msg})
-	if err != nil {
-		return fmt.Errorf("failed to replicate message: %w", err)
+	// Start an output goroutine for each input channel in cs.  output
+	// copies values from c to out until c is closed, then calls wg.Done.
+	output := func(c <-chan T) {
+		for n := range c {
+			out <- n
+		}
+		wg.Done()
+	}
+	wg.Add(len(chs))
+	for _, c := range chs {
+		go output(c)
 	}
 
-	return nil
+	// Start a goroutine to close out once all the output goroutines are
+	// done.  This must start after the wg.Add call.
+	go func() {
+		wg.Wait()
+		close(out)
+	}()
+	return out
 }
