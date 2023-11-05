@@ -34,7 +34,7 @@ func main() {
 	var apis []lifecycle.Lifecycle
 	if !cfg.IsMainNode {
 		log.Info().Msg("Service configured as child node")
-		apis = append(apis, &grpc_server.Server{})
+		apis = append(apis, &grpc_server.Server{Delay: cfg.Delay})
 	}
 
 	httpServer := http_server.NewServer(cfg)

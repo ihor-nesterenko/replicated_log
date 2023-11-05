@@ -14,6 +14,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -91,6 +93,28 @@ func (s *Server) listMsgs(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) appendMsgs(w http.ResponseWriter, r *http.Request) {
+	params, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	concernRaw := params.Get("concern")
+	concern, err := strconv.ParseInt(concernRaw, 10, 64)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		resp := resp{
+			Errs: []string{errors.Join(err, errors.New("failed to parse concern parameter")).Error()},
+		}
+		if err = json.NewEncoder(w).Encode(&resp); err != nil {
+			log.Error().Err(err).Msg("failed to parse concern parameter")
+		}
+		return
+	}
+	replicasCount := int64(len(s.replicas))
+	if concern <= 0 || concern > replicasCount+1 {
+		concern = replicasCount
+	}
+
 	msgRaw, err := io.ReadAll(r.Body)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -105,22 +129,39 @@ func (s *Server) appendMsgs(w http.ResponseWriter, r *http.Request) {
 	msg := string(msgRaw)
 
 	storage.GetList().Add(msg)
+	if concern == 1 {
+		s.listMsgs(w, r)
+		return
+	}
 
 	replicasChs := make([]<-chan error, 0, len(s.replicas))
 	for _, replica := range s.replicas {
 		replicasChs = append(replicasChs, s.replicate(replica, msg))
-
 	}
 
 	res := merge(replicasChs...)
-	var errorsFromReplicas []string
+	var (
+		errorsFromReplicas []string
+		//start with one since we always write to main
+		count int64 = 1
+	)
 	for err := range res {
+		//if we got response from enough replicas - return without waiting
+		//we don't care if any replication will fail so we are safe to return
 		if err != nil {
 			errorsFromReplicas = append(errorsFromReplicas, fmt.Errorf("failed to replicate log: %w", err).Error())
+		} else {
+			count++
+		}
+
+		if count == concern {
+			s.listMsgs(w, r)
+			return
 		}
 	}
 
-	if len(errorsFromReplicas) != 0 {
+	// return errors to user only if concern hadn't been satisfied
+	if len(errorsFromReplicas) != 0 && count < concern {
 		w.WriteHeader(http.StatusInternalServerError)
 		resp := resp{
 			Errs: errorsFromReplicas,
@@ -152,7 +193,7 @@ func (s *Server) replicate(replica, msg string) <-chan error {
 
 		client := api.NewReplicatorClient(conn)
 
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 		defer cancel()
 
 		_, err = client.Replicate(ctx, &api.ReplicateRequest{Msg: msg})
@@ -161,6 +202,7 @@ func (s *Server) replicate(replica, msg string) <-chan error {
 			return
 		}
 
+		resCh <- nil
 		return
 	}()
 	return resCh

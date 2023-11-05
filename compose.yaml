@@ -8,6 +8,8 @@ services:
       - "8080:8080"
   replica_1:
     build: .
+    environment:
+      - DELAY=60
     ports:
       - "8081:8080"
   replica_2:

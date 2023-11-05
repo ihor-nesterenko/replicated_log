@@ -9,12 +9,14 @@ import (
 	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc"
 	"net"
+	"time"
 )
 
 type Server struct {
 	api.UnimplementedReplicatorServer
 
 	server *grpc.Server
+	Delay  int
 }
 
 func (s *Server) Start() error {
@@ -39,6 +41,10 @@ func (s *Server) Stop() error {
 }
 
 func (s *Server) Replicate(_ context.Context, in *api.ReplicateRequest) (*api.ReplicateResponse, error) {
+	timer := time.NewTimer(time.Duration(s.Delay) * time.Second)
+	defer timer.Stop()
+
+	<-timer.C
 	storage.GetList().Add(in.GetMsg())
 	return &api.ReplicateResponse{
 		Msg: storage.GetList().Get(),
