@@ -1,4 +1,4 @@
-# Replicated log iteration 1  
+# Replicated log iteration 2
 First iteration of distributed systems homework.  
 By default there is one main instance and two replicas.  
 Feel free to modify compose.yaml with as many replicas as you want.  
